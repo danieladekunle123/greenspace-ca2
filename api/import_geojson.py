@@ -61,44 +61,66 @@ def load_playgrounds():
 
 
 def load_routes():
-    from django.db import connection
-    import json
-    from pathlib import Path
+    path = BASE_DIR / "data" / "osm_footways.geojson"
+    print(f"Loading walking routes from {path}")
 
-    data_path = Path(__file__).resolve().parent.parent / "data" / "osm_footways.geojson"
+    with open(path, "r", encoding="utf-8") as f:
+        gj = json.load(f)
 
-    print(f"Loading walking routes from {data_path}")
     with connection.cursor() as cur:
-        # IMPORTANT: truncate access_issues first (FK to walking_routes)
+        # If you have FK from access_issues → walking_routes, truncate both
         cur.execute("TRUNCATE access_issues, walking_routes RESTART IDENTITY CASCADE;")
 
-        with open(data_path, "r", encoding="utf-8") as f:
-            gj = json.load(f)
+        inserted = 0
+        skipped = 0
 
-        for feat in gj["features"]:
-            geom = json.dumps(feat["geometry"])
+        for feat in gj.get("features", []):
+            geom = feat.get("geometry")
             props = feat.get("properties") or {}
 
+            if not geom:
+                skipped += 1
+                continue
+
+            geom_type = geom.get("type")
+
+            # Only accept LineString / MultiLineString. Skip Polygons etc.
+            if geom_type not in ("LineString", "MultiLineString"):
+                skipped += 1
+                continue
+
             name = props.get("name") or ""
-            source = "OSM"
-            surface = props.get("surface") or ""
-            smoothness = props.get("smoothness") or ""
-            is_accessible = (
-                props.get("wheelchair") in ("yes", "designated", "permissive")
+            source = "OSM footway"
+            surface = props.get("surface")
+            smoothness = props.get("smoothness")
+
+            # Very simple heuristic for is_accessible
+            is_accessible = surface in ("asphalt", "paved", "concrete") and smoothness in (
+                "excellent",
+                "good",
+                "intermediate",
             )
 
             cur.execute(
                 """
-                INSERT INTO walking_routes (name, source, surface, smoothness, is_accessible, geom)
-                VALUES (%s, %s, %s, %s, %s,
-                        ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)
+                INSERT INTO walking_routes(name, source, surface, smoothness, is_accessible, geom)
+                VALUES (
+                  %s, %s, %s, %s, %s,
+                  ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)
                 );
                 """,
-                [name, source, surface, smoothness, is_accessible, geom],
+                [
+                    name,
+                    source,
+                    surface,
+                    smoothness,
+                    is_accessible,
+                    json.dumps(geom),
+                ],
             )
+            inserted += 1
 
-    print("Walking routes loaded.")
-
+    print(f"Routes loaded. Inserted={inserted}, skipped_non_lines={skipped}")
 
 
 def run():
