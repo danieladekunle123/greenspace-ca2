@@ -61,68 +61,43 @@ def load_playgrounds():
 
 
 def load_routes():
-    path = BASE_DIR / "data" / "osm_footways.geojson"
-    print(f"Loading walking routes from {path}")
-    with open(path, "r", encoding="utf-8") as f:
-        gj = json.load(f)
+    from django.db import connection
+    import json
+    from pathlib import Path
 
+    data_path = Path(__file__).resolve().parent.parent / "data" / "osm_footways.geojson"
+
+    print(f"Loading walking routes from {data_path}")
     with connection.cursor() as cur:
-        # Clear existing rows
-        cur.execute("TRUNCATE walking_routes RESTART IDENTITY;")
+        # IMPORTANT: truncate access_issues first (FK to walking_routes)
+        cur.execute("TRUNCATE access_issues, walking_routes RESTART IDENTITY CASCADE;")
 
-        count_total = 0
-        count_inserted = 0
-        count_skipped = 0
+        with open(data_path, "r", encoding="utf-8") as f:
+            gj = json.load(f)
 
-        for feat in gj.get("features", []):
-            count_total += 1
-            geom = feat.get("geometry")
-            props = feat.get("properties", {}) or {}
-
-            if not geom:
-                count_skipped += 1
-                continue
-
-            geom_type = geom.get("type")
-            # Only accept true LineStrings; skip Polygons, MultiLineStrings, etc.
-            if geom_type != "LineString":
-                count_skipped += 1
-                continue
+        for feat in gj["features"]:
+            geom = json.dumps(feat["geometry"])
+            props = feat.get("properties") or {}
 
             name = props.get("name") or ""
-            surface = props.get("surface")
-            smoothness = props.get("smoothness")
-
-            # simple heuristic for accessibility flag
-            is_accessible = False
-            if surface in ("asphalt", "concrete"):
-                if smoothness in ("good", "excellent", "very_good"):
-                    is_accessible = True
+            source = "OSM"
+            surface = props.get("surface") or ""
+            smoothness = props.get("smoothness") or ""
+            is_accessible = (
+                props.get("wheelchair") in ("yes", "designated", "permissive")
+            )
 
             cur.execute(
                 """
-                INSERT INTO walking_routes(name, source, surface, smoothness, is_accessible, geom)
-                VALUES (
-                  %s,
-                  %s,
-                  %s,
-                  %s,
-                  %s,
-                  ST_SetSRID(ST_GeomFromGeoJSON(%s),4326)
+                INSERT INTO walking_routes (name, source, surface, smoothness, is_accessible, geom)
+                VALUES (%s, %s, %s, %s, %s,
+                        ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)
                 );
                 """,
-                [
-                    name,
-                    "osm",
-                    surface,
-                    smoothness,
-                    is_accessible,
-                    json.dumps(geom),
-                ],
+                [name, source, surface, smoothness, is_accessible, geom],
             )
-            count_inserted += 1
 
-    print(f"Walking routes: total={count_total}, inserted={count_inserted}, skipped={count_skipped}")
+    print("Walking routes loaded.")
 
 
 
