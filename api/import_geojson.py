@@ -1,6 +1,5 @@
 import json
-import os
-
+from pathlib import Path
 from django.conf import settings
 from django.db import connection
 
@@ -10,131 +9,123 @@ DATA_DIR = settings.BASE_DIR / "data"
 def load_parks():
     path = DATA_DIR / "dcc_parks.geojson"
     print(f"Loading parks from {path}")
-
-    with open(path, "r", encoding="utf-8") as f:
+    with path.open() as f:
         gj = json.load(f)
 
     with connection.cursor() as cur:
-        # Start fresh
-        cur.execute("TRUNCATE parks RESTART IDENTITY CASCADE;")
-
+        cur.execute("TRUNCATE parks RESTART IDENTITY;")
         for feat in gj.get("features", []):
             geom = feat.get("geometry")
             if not geom:
                 continue
+            geom_json = json.dumps(geom)
 
             props = feat.get("properties") or {}
-            name = props.get("name") or props.get("fullname") or "Park"
-            category = props.get("type") or props.get("category")
+            name = (
+                props.get("name")
+                or props.get("NAME")
+                or "Park"
+            )
+            category = (
+                props.get("category")
+                or props.get("CATEGORY")
+                or ""
+            )
             area_ha = (
                 props.get("area_ha")
-                or props.get("area_ha_calc")
-                or props.get("area_ha_calc_1")
+                or props.get("AREA_HA")
             )
 
             cur.execute(
                 """
                 INSERT INTO parks (name, category, area_ha, geom)
-                VALUES (%s, %s, %s, ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326));
+                VALUES (%s, %s, %s,
+                        ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326))
                 """,
-                [name, category, area_ha, json.dumps(geom)],
+                [name, category, area_ha, geom_json],
             )
-
     print("Parks loaded.")
 
 
 def load_playgrounds():
     path = DATA_DIR / "osm_playgrounds.geojson"
     print(f"Loading playgrounds from {path}")
-
-    with open(path, "r", encoding="utf-8") as f:
+    with path.open() as f:
         gj = json.load(f)
 
     with connection.cursor() as cur:
-        cur.execute("TRUNCATE playgrounds RESTART IDENTITY CASCADE;")
-
+        cur.execute("TRUNCATE playgrounds RESTART IDENTITY;")
         for feat in gj.get("features", []):
             geom = feat.get("geometry")
             if not geom:
                 continue
+            geom_json = json.dumps(geom)
 
             props = feat.get("properties") or {}
-            name = props.get("name") or "Playground"
-            source = "OSM"
+            name = (
+                props.get("name")
+                or props.get("NAME")
+                or "Playground"
+            )
 
             cur.execute(
                 """
                 INSERT INTO playgrounds (name, source, geom)
-                VALUES (%s, %s, ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326));
+                VALUES (%s, %s,
+                        ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326))
                 """,
-                [name, source, json.dumps(geom)],
+                [name, "OSM", geom_json],
             )
-
     print("Playgrounds loaded.")
 
 
 def load_routes():
     path = DATA_DIR / "osm_footways.geojson"
     print(f"Loading walking routes from {path}")
-
-    with open(path, "r", encoding="utf-8") as f:
+    with path.open() as f:
         gj = json.load(f)
 
     with connection.cursor() as cur:
-        # Because access_issues has a FK to walking_routes, truncate both with CASCADE
-        cur.execute(
-            "TRUNCATE access_issues, walking_routes RESTART IDENTITY CASCADE;"
-        )
-
-        inserted = 0
-        skipped = 0
+        # if there are any access_issues already, truncate them too so FK doesn't block us
+        cur.execute("TRUNCATE access_issues RESTART IDENTITY CASCADE;")
+        cur.execute("TRUNCATE walking_routes RESTART IDENTITY;")
 
         for feat in gj.get("features", []):
             geom = feat.get("geometry")
             if not geom:
-                skipped += 1
                 continue
 
+            # Only accept LineString/MultiLineString. Skip Polygons etc.
             gtype = geom.get("type")
-            # Only load pure LineString; skip Polygons, MultiLineStrings, etc.
-            if gtype != "LineString":
-                skipped += 1
+            if gtype not in ("LineString", "MultiLineString"):
                 continue
+
+            geom_json = json.dumps(geom)
 
             props = feat.get("properties") or {}
-            name = props.get("name") or "Footpath"
-            source = "OSM"
-            surface = props.get("surface")
-            smoothness = props.get("smoothness")
+            name = props.get("name") or props.get("NAME") or ""
+            surface = props.get("surface") or ""
+            smoothness = props.get("smoothness") or ""
 
-            # Simple heuristic: treat "paved / asphalt / concrete" etc. as accessible
-            surface_lower = (surface or "").lower()
-            smooth_lower = (smoothness or "").lower()
-            is_accessible = any(
-                key in surface_lower
-                for key in ["paved", "asphalt", "concrete", "paving_stones", "tactile"]
-            ) and ("bad" not in smooth_lower and "very_bad" not in smooth_lower)
+            # Very simple heuristic for is_accessible
+            is_accessible = surface in ("paved", "asphalt", "concrete") and smoothness in (
+                "good",
+                "excellent",
+                "very_good",
+            )
 
+            # ST_LineMerge will handle MultiLineString -> LineString in many cases.
             cur.execute(
                 """
                 INSERT INTO walking_routes
                   (name, source, surface, smoothness, is_accessible, geom)
                 VALUES
                   (%s, %s, %s, %s, %s,
-                   ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326));
+                   ST_SetSRID(ST_LineMerge(ST_GeomFromGeoJSON(%s)), 4326))
                 """,
-                [
-                    name,
-                    source,
-                    surface,
-                    smoothness,
-                    is_accessible,
-                    json.dumps(geom),
-                ],
+                [name, "OSM", surface, smoothness, is_accessible, geom_json],
             )
-            inserted += 1
-
-    print(f"Walking routes loaded. Inserted={inserted}, skipped_non_lines={skipped}")
+    print("Walking routes loaded.")
 
 
 def run():
@@ -142,4 +133,4 @@ def run():
     load_parks()
     load_playgrounds()
     load_routes()
-    print("All data imported.")
+    print("All data loaded.")
