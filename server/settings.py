@@ -26,8 +26,15 @@ SECRET_KEY = 'django-insecure-)tted!ja*9=pfl81*!8mewru71vzoe!%0dexw6tbl1)6t0uid-
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get("DJANGO_DEBUG", "True") == "True"
 
-ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+ALLOWED_HOSTS = os.environ.get(
+    "DJANGO_ALLOWED_HOSTS",
+    "localhost,127.0.0.1,greenspace-ca2.onrender.com",
+).split(",")
 
+CSRF_TRUSTED_ORIGINS = os.environ.get(
+    "CSRF_TRUSTED_ORIGINS",
+    "https://greenspace-ca2.onrender.com",
+).split(",")
 
 # Application definition
 
@@ -45,7 +52,6 @@ INSTALLED_APPS = [
     # Local app
     'api',
 ]
-
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -78,9 +84,7 @@ TEMPLATES = [
     },
 ]
 
-
 WSGI_APPLICATION = 'server.wsgi.application'
-
 
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
@@ -95,7 +99,6 @@ DATABASES = {
         "PORT": os.environ.get("POSTGRES_PORT", "5432"),
     }
 }
-
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
